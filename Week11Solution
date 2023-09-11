@@ -1,0 +1,66 @@
+-- create database and schema
+CREATE DATABASE frosty_friday;
+CREATE SCHEMA challenges;
+
+-- Set the database and schema
+use database frosty_friday;
+use schema challenges;
+
+CREATE OR REPLACE FILE FORMAT csv_format 
+    TYPE = CSV
+    SKIP_HEADER = 1;
+
+-- Create the stage that points at the data.
+create OR REPLACE stage week_11_frosty_stage
+    url = 's3://frostyfridaychallenges/challenge_11/'
+    file_format = csv_format;
+
+-- Create the table as a CTAS statement.
+create or replace table frosty_friday.challenges.week11 as
+select m.$1 as milking_datetime,
+        m.$2 as cow_number,
+        m.$3 as fat_percentage,
+        m.$4 as farm_code,
+        m.$5 as centrifuge_start_time,
+        m.$6 as centrifuge_end_time,
+        m.$7 as centrifuge_kwph,
+        m.$8 as centrifuge_electricity_used,
+        m.$9 as centrifuge_processing_time,
+        m.$10 as task_used
+from @week_11_frosty_stage (file_format => csv_format, pattern => '.*milk_data.*[.]csv') m;
+
+-- TASK 1: Remove all the centrifuge dates and centrifuge kwph and replace them with NULLs WHERE fat = 3. 
+-- Add note to task_used.
+create or replace task whole_milk_updates
+    schedule = '1400 minutes'
+as
+    UPDATE week11
+    SET centrifuge_end_time = NULL,
+        centrifuge_start_time = NULL,
+        centrifuge_kwph = NULL,
+        task_used = CONCAT(SYSTEM$CURRENT_USER_TASK_NAME(), ' at ', CURRENT_TIMESTAMP)
+    WHERE fat_percentage = 3;
+
+
+-- TASK 2: Calculate centrifuge processing time (difference between start and end time) WHERE fat != 3. 
+-- Add note to task_used.
+create or replace task skim_milk_updates
+    after frosty_friday.challenges.whole_milk_updates
+as
+  UPDATE week11 
+    SET centrifuge_processing_time = DATEDIFF(minute, centrifuge_start_time, centrifuge_end_time),
+        task_used = CONCAT(SYSTEM$CURRENT_USER_TASK_NAME(), ' at ', CURRENT_TIMESTAMP)
+    WHERE fat_percentage != 3;  
+
+-- Manually execute the task.
+ALTER TASK skim_milk_updates RESUME;
+ALTER TASK whole_milk_updates RESUME;
+
+execute task whole_milk_updates;
+
+
+-- Check that the data looks as it should.
+select * from week11;
+
+-- Check that the numbers are correct.
+select task_used, count(*) as row_count from week11 group by task_used;
